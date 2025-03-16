@@ -1,72 +1,51 @@
-name: Frontend CI/CD
+name: Build and Push Frontend
 
 on:
   workflow_call:
-
-env:
-  IMAGE_NAME_FE: ${{ secrets.AWS_ACCOUNT_NUMBER }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.CI_PROJECT_FE_NAME }}:${{ github.ref_name }}
+  push:
+    branches: [ master ]
+    paths:
+      - 'frontend/**'
+  workflow_dispatch: {}
 
 jobs:
-  # this comment need when you implement in prod env (1)
-  # check_changes_frontend:
-  #   runs-on: ubuntu-latest
-  #   outputs:
-  #     frontend: ${{ steps.filter.outputs.frontend }}
-  #   steps:
-  #     - uses: actions/checkout@v2
-  #     - uses: dorny/paths-filter@v2
-  #       id: filter
-  #       with:
-  #         filters: |
-  #           frontend:
-  #             - 'frontend/**'
-
   build-and-push:
-    # this comment need when you implement in prod env (1)
-    # needs: check_changes_frontend
-    # if: ${{ needs.check_changes_frontend.outputs.frontend == 'true' }}
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
+      - name: Checkout source code
+        uses: actions/checkout@v4  
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        id: buildx
 
-      - name: Build, tag, and push image to Amazon ECR
-        working-directory: ./frontend
+      - name: Cache Docker Image Layers
+        uses: actions/cache@v3
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-frontend-buildx-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-frontend-buildx-
+
+      - name: Build and Push Frontend Image
+        id: build_frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          builder: ${{ steps.buildx.outputs.name }}
+          push: true
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/frontend-app:latest
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
+
+      - name: Verify Frontend Build Digest
         run: |
-          docker build -f Dockerfile.prod -t ${{ env.IMAGE_NAME_FE }} .
-          docker push ${{ env.IMAGE_NAME_FE }}
-
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Deploy Frontend
-        env:
-          TASK_NAME_FE: ${{ secrets.TASK_NAME_FE }}
-          CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
-          SERVICE_NAME_FE: ${{ secrets.SERVICE_NAME_FE }}
-          IMAGE_NAME_FE: ${{ env.IMAGE_NAME_FE }}
-          REGION: ${{ secrets.AWS_REGION }}
-        run: bash frontend/deploy-frontend.sh
- 
+          echo "Frontend Image Digest: ${{ steps.build_frontend.outputs.digest }}"
